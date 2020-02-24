@@ -2,6 +2,8 @@ import inspect
 import re
 import typing
 import warnings
+from collections import OrderedDict
+from decimal import Decimal
 from operator import attrgetter
 from urllib.parse import urljoin
 from uuid import UUID
@@ -85,6 +87,10 @@ class SchemaGenerator(BaseSchemaGenerator):
         if not paths:
             return None
 
+        # Iterate endpoints generating per method path operations.
+        # TODO: …and reference components.
+        paths = {}
+        _, view_endpoints = self._get_paths_and_endpoints(None if public else request)
         for path, method, view in view_endpoints:
             if not self.has_view_permissions(path, method, view):
                 continue
@@ -312,6 +318,35 @@ class AutoSchema(ViewInspector):
 
         return paginator.get_schema_operation_parameters(view)
 
+    def _map_choicefield(self, field):
+        choices = list(OrderedDict.fromkeys(field.choices))  # preserve order and remove duplicates
+        if all(isinstance(choice, bool) for choice in choices):
+            type = 'boolean'
+        elif all(isinstance(choice, int) for choice in choices):
+            type = 'integer'
+        elif all(isinstance(choice, (int, float, Decimal)) for choice in choices):  # `number` includes `integer`
+            # Ref: https://tools.ietf.org/html/draft-wright-json-schema-validation-00#section-5.21
+            type = 'number'
+        elif all(isinstance(choice, str) for choice in choices):
+            type = 'string'
+        else:
+            type = None
+
+        mapping = {
+            # The value of `enum` keyword MUST be an array and SHOULD be unique.
+            # Ref: https://tools.ietf.org/html/draft-wright-json-schema-validation-00#section-5.20
+            'enum': choices
+        }
+
+        # If We figured out `type` then and only then we should set it. It must be a string.
+        # Ref: https://swagger.io/docs/specification/data-models/data-types/#mixed-type
+        # It is optional but it can not be null.
+        # Ref: https://tools.ietf.org/html/draft-wright-json-schema-validation-00#section-5.21
+        if type:
+            mapping['type'] = type
+        return mapping
+
+
     def _map_field(self, method, field):
         # Nested Serializers, `many` or not.
         if isinstance(field, serializers.ListSerializer):
@@ -344,21 +379,18 @@ class AutoSchema(ViewInspector):
         if isinstance(field, serializers.MultipleChoiceField):
             return {
                 'type': 'array',
-                'items': {
-                    'enum': list(field.choices)
-                },
+                'items': self._map_choicefield(field)
             }
 
         if isinstance(field, serializers.ChoiceField):
-            return {
-                'enum': list(field.choices),
-            }
+            return self._map_choicefield(field)
 
         if isinstance(field, serializers.ListField):
             mapping = {
                 'type': 'array',
                 'items': {},
             }
+	# TODO check this
             if not isinstance(field.child, _UnvalidatedField):
                 map_field = self._map_field(method, field.child)
                 items = {
@@ -484,7 +516,7 @@ class AutoSchema(ViewInspector):
                 schema['writeOnly'] = True
             if field.allow_null:
                 schema['nullable'] = True
-            if field.default and field.default != empty and not callable(field.default):
+            if field.default is not None and field.default != empty and not callable(field.default):
                 schema['default'] = field.default
             if field.help_text:
                 schema['description'] = str(field.help_text)
@@ -493,6 +525,7 @@ class AutoSchema(ViewInspector):
             properties[field.field_name] = schema
 
         result = {
+            'type': 'object',
             'properties': properties
         }
         if required and method != 'PATCH':
@@ -576,7 +609,7 @@ class AutoSchema(ViewInspector):
             media_types.append(renderer.media_type)
         return media_types
 
-    def _get_serializer(self, method, path):
+    def _get_serializer(self, path, method):
         view = self.view
 
         if not hasattr(view, 'get_serializer'):

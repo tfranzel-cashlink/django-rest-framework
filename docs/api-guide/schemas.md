@@ -18,19 +18,19 @@ Django REST Framework provides support for automatic generation of
 
 ## Generating an OpenAPI Schema
 
-### Install `pyyaml`
+### Install dependencies
 
-You'll need to install `pyyaml`, so that you can render your generated schema
-into the commonly used YAML-based OpenAPI format.
+    pip install pyyaml uritemplate
 
-    pip install pyyaml
+* `pyyaml` is used to generate schema into YAML-based OpenAPI format.
+* `uritemplate` is used internally to get parameters in path.
 
 ### Generating a static schema with the `generateschema` management command
 
 If your schema is static, you can use the `generateschema` management command:
 
 ```bash
-./manage.py generateschema > openapi-schema.yml
+./manage.py generateschema --file openapi-schema.yml
 ```
 
 Once you've generated a schema in this way you can annotate it with any
@@ -122,7 +122,7 @@ on a per-view basis.
 
 ### Schema Level Customization
 
-In order to customize the top-level schema sublass
+In order to customize the top-level schema subclass
 `rest_framework.schemas.openapi.SchemaGenerator` and provide it as an argument
 to the `generateschema` command or `get_schema_view()` helper function.
 

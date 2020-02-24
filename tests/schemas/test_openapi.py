@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from django.conf.urls import include, url
 from django.db import models
@@ -9,7 +11,7 @@ from rest_framework import (
 )
 from rest_framework.compat import uritemplate
 from rest_framework.parsers import JSONParser, MultiPartParser
-from rest_framework.renderers import JSONRenderer
+from rest_framework.renderers import JSONRenderer, OpenAPIRenderer
 from rest_framework.request import Request
 from rest_framework.schemas.openapi import (
     AutoSchema, ComponentRegistry, SchemaGenerator
@@ -49,6 +51,8 @@ class TestBasics(TestCase):
 
 class TestFieldMapping(TestCase):
     def test_list_field_mapping(self):
+        uuid1 = uuid.uuid4()
+        uuid2 = uuid.uuid4()
         inspector = AutoSchema()
         cases = [
             (serializers.ListField(), {'items': {}, 'type': 'array'}),
@@ -56,7 +60,27 @@ class TestFieldMapping(TestCase):
             (serializers.ListField(child=serializers.FloatField()), {'items': {'type': 'number'}, 'type': 'array'}),
             (serializers.ListField(child=serializers.CharField()), {'items': {'type': 'string'}, 'type': 'array'}),
             (serializers.ListField(child=serializers.IntegerField(max_value=4294967295)),
-             {'items': {'type': 'integer', 'format': 'int64'}, 'type': 'array'}),
+             {'items': {'type': 'integer', 'maximum': 4294967295, 'format': 'int64'}, 'type': 'array'}),
+            (serializers.ListField(child=serializers.ChoiceField(choices=[('a', 'Choice A'), ('b', 'Choice B')])),
+             {'items': {'enum': ['a', 'b'], 'type': 'string'}, 'type': 'array'}),
+            (serializers.ListField(child=serializers.ChoiceField(choices=[(1, 'One'), (2, 'Two')])),
+             {'items': {'enum': [1, 2], 'type': 'integer'}, 'type': 'array'}),
+            (serializers.ListField(child=serializers.ChoiceField(choices=[(1.1, 'First'), (2.2, 'Second')])),
+             {'items': {'enum': [1.1, 2.2], 'type': 'number'}, 'type': 'array'}),
+            (serializers.ListField(child=serializers.ChoiceField(choices=[(True, 'true'), (False, 'false')])),
+             {'items': {'enum': [True, False], 'type': 'boolean'}, 'type': 'array'}),
+            (serializers.ListField(child=serializers.ChoiceField(choices=[(uuid1, 'uuid1'), (uuid2, 'uuid2')])),
+             {'items': {'enum': [uuid1, uuid2]}, 'type': 'array'}),
+            (serializers.ListField(child=serializers.ChoiceField(choices=[(1, 'One'), ('a', 'Choice A')])),
+             {'items': {'enum': [1, 'a']}, 'type': 'array'}),
+            (serializers.ListField(child=serializers.ChoiceField(choices=[
+                (1, 'One'), ('a', 'Choice A'), (1.1, 'First'), (1.1, 'First'), (1, 'One'), ('a', 'Choice A'), (1, 'One')
+            ])),
+                {'items': {'enum': [1, 'a', 1.1]}, 'type': 'array'}),
+            (serializers.ListField(child=serializers.ChoiceField(choices=[
+                (1, 'One'), (2, 'Two'), (3, 'Three'), (2, 'Two'), (3, 'Three'), (1, 'One'),
+            ])),
+                {'items': {'enum': [1, 2, 3], 'type': 'integer'}, 'type': 'array'}),
             (serializers.IntegerField(min_value=2147483648),
              {'type': 'integer', 'minimum': 2147483648, 'format': 'int64'}),
         ]
@@ -72,6 +96,19 @@ class TestFieldMapping(TestCase):
 
         data = inspector._map_serializer('GET', Serializer())
         assert isinstance(data['properties']['text']['description'], str), "description must be str"
+
+    def test_boolean_default_field(self):
+        class Serializer(serializers.Serializer):
+            default_true = serializers.BooleanField(default=True)
+            default_false = serializers.BooleanField(default=False)
+            without_default = serializers.BooleanField()
+
+        inspector = AutoSchema()
+
+        data = inspector._map_serializer(Serializer())
+        assert data['properties']['default_true']['default'] is True, "default must be true"
+        assert data['properties']['default_false']['default'] is False, "default must be false"
+        assert 'default' not in data['properties']['without_default'], "default must not be defined"
 
 
 @pytest.mark.skipif(uritemplate is None, reason='uritemplate not installed.')
@@ -467,6 +504,19 @@ class TestOperationIntrospection(TestCase):
         assert len(success_response['content'].keys()) == 1
         assert 'application/json' in success_response['content']
 
+    def test_openapi_yaml_rendering_without_aliases(self):
+        renderer = OpenAPIRenderer()
+
+        reused_object = {'test': 'test'}
+        data = {
+            'o1': reused_object,
+            'o2': reused_object,
+        }
+        assert (
+            renderer.render(data) == b'o1:\n  test: test\no2:\n  test: test\n' or
+            renderer.render(data) == b'o2:\n  test: test\no1:\n  test: test\n'  # py <= 3.5
+        )
+
     def test_serializer_filefield(self):
         path = '/{id}/'
         method = 'POST'
@@ -776,6 +826,15 @@ class TestGenerator(TestCase):
 
         assert 'openapi' in schema
         assert 'paths' in schema
+
+    def test_schema_with_no_paths(self):
+        patterns = []
+        generator = SchemaGenerator(patterns=patterns)
+
+        request = create_request('/')
+        schema = generator.get_schema(request=request)
+
+        assert schema['paths'] == {}
 
     def test_schema_information(self):
         """Construction of the top level dictionary."""
