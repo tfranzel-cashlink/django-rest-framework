@@ -8,10 +8,7 @@ from operator import attrgetter
 from urllib.parse import urljoin
 from uuid import UUID
 
-from django.core.validators import (
-    DecimalValidator, EmailValidator, MaxLengthValidator, MaxValueValidator,
-    MinLengthValidator, MinValueValidator, RegexValidator, URLValidator
-)
+from django.core import validators
 from django.db import models
 from django.utils.encoding import force_str
 from django.utils.module_loading import import_string
@@ -90,7 +87,6 @@ class SchemaGenerator(BaseSchemaGenerator):
         # Iterate endpoints generating per method path operations.
         # TODO: …and reference components.
         paths = {}
-        _, view_endpoints = self._get_paths_and_endpoints(None if public else request)
         for path, method, view in view_endpoints:
             if not self.has_view_permissions(path, method, view):
                 continue
@@ -390,7 +386,7 @@ class AutoSchema(ViewInspector):
                 'type': 'array',
                 'items': {},
             }
-	# TODO check this
+            # TODO check this
             if not isinstance(field.child, _UnvalidatedField):
                 map_field = self._map_field(method, field.child)
                 items = {
@@ -537,27 +533,27 @@ class AutoSchema(ViewInspector):
         for v in field.validators:
             # "Formats such as "email", "uuid", and so on, MAY be used even though undefined by this specification."
             # https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.2.md#data-types
-            if isinstance(v, EmailValidator):
+            if isinstance(v, validators.EmailValidator):
                 schema['format'] = 'email'
-            if isinstance(v, URLValidator):
+            if isinstance(v, validators.URLValidator):
                 schema['format'] = 'uri'
-            if isinstance(v, RegexValidator):
+            if isinstance(v, validators.RegexValidator):
                 schema['pattern'] = v.regex.pattern
-            elif isinstance(v, MaxLengthValidator):
+            elif isinstance(v, validators.MaxLengthValidator):
                 attr_name = 'maxLength'
                 if isinstance(field, serializers.ListField):
                     attr_name = 'maxItems'
                 schema[attr_name] = v.limit_value
-            elif isinstance(v, MinLengthValidator):
+            elif isinstance(v, validators.MinLengthValidator):
                 attr_name = 'minLength'
                 if isinstance(field, serializers.ListField):
                     attr_name = 'minItems'
                 schema[attr_name] = v.limit_value
-            elif isinstance(v, MaxValueValidator):
+            elif isinstance(v, validators.MaxValueValidator):
                 schema['maximum'] = v.limit_value
-            elif isinstance(v, MinValueValidator):
+            elif isinstance(v, validators.MinValueValidator):
                 schema['minimum'] = v.limit_value
-            elif isinstance(v, DecimalValidator):
+            elif isinstance(v, validators.DecimalValidator):
                 if v.decimal_places:
                     schema['multipleOf'] = float('.' + (v.decimal_places - 1) * '0' + '1')
                 if v.max_digits:
@@ -679,6 +675,10 @@ class AutoSchema(ViewInspector):
             return {'200': self._get_response_for_code(path, method, schema)}
 
     def _get_response_for_code(self, path, method, serializer_instance):
+        # convenience feature: auto instantiate serializer classes
+        if inspect.isclass(serializer_instance) and issubclass(serializer_instance, serializers.Serializer):
+            serializer_instance = serializer_instance()
+
         if not serializer_instance:
             return {'description': 'No response body'}
         elif isinstance(serializer_instance, serializers.Serializer):
@@ -701,13 +701,16 @@ class AutoSchema(ViewInspector):
                     'propertyName': serializer_instance.resource_type_field_name
                 }
             }
+        elif isinstance(serializer_instance, serializers.ListSerializer):
+            schema = self.resolve_serializer(method, serializer_instance.child)
         elif isinstance(serializer_instance, dict):
             # bypass processing and use given schema directly
             schema = serializer_instance
         else:
             raise ValueError('Serializer type unsupported')
 
-        if is_list_view(path, method, self.view):
+        if isinstance(serializer_instance, serializers.ListSerializer) or is_list_view(path, method, self.view):
+            # TODO i fear is_list_view is not covering all the cases
             schema = {
                 'type': 'array',
                 'items': schema,
